@@ -50,7 +50,6 @@ class KafkaClient:
                 value=data,
                 key=config.pc_id.encode("utf-8"),
             )
-            print(config.to_json())
             meta = future.get(timeout=10)
             self.logger.info(
                 f"Конфигурация отправлена: PC={config.pc_id}, "
@@ -59,8 +58,10 @@ class KafkaClient:
         except KafkaError as e:
             self.logger.error(f"Ошибка отправки в Kafka: {e}")
             self.producer = None
+            raise
         except Exception as e:
             self.logger.error(f"Неожиданная ошибка при отправке в Kafka: {e}")
+            raise
 
     def close(self):
         if self.producer:

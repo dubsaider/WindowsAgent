@@ -18,10 +18,18 @@ a = Analysis(
         ('config.json.example', '.'),
     ],
     hiddenimports=[
+        # WMI и COM
         'wmi',
-        'kafka',
         'win32com',
         'win32com.client',
+        # kafka-python (модуль kafka)
+        'kafka',
+        'kafka.errors',
+        'kafka.producer',
+        'kafka.producer.kafka',
+        'kafka.client',
+        'kafka.consumer',
+        'kafka.partitioner',
     ],
     hookspath=[],
     hooksconfig={},

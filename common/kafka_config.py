@@ -15,7 +15,7 @@ class KafkaConfig:
         Args:
             config_file: Путь к файлу конфигурации (опционально)
         """
-        self.bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self.bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', '10.53.16.49:9092')
         self.topic = os.getenv('KAFKA_TOPIC', 'pc-guardian-configs')
         self.security_protocol = os.getenv('KAFKA_SECURITY_PROTOCOL', 'PLAINTEXT')  # PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
         self.ssl_cafile = os.getenv('KAFKA_SSL_CAFILE', None)

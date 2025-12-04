@@ -1,5 +1,5 @@
 {
-  "bootstrap_servers": "localhost:9092",
+  "bootstrap_servers": "10.53.16.49:9092",
   "topic": "pc-guardian-configs",
   "security_protocol": "PLAINTEXT",
   "ssl_cafile": null,

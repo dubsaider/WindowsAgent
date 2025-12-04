@@ -1,208 +1,20 @@
 """
-Агент для Windows - сбор данных о комплектующих ПК и отправка в Kafka
+Агент для Windows - сбор данных о ПК и отправка в Kafka.
+
+Слоистая архитектура:
+- os_layer: взаимодействие с ОС/WMI
+- common.kafka_config: конфигурация Kafka
+- этот модуль: доменный «агент», который оркестрирует сбор и отправку
 """
+
 import sys
-import os
 import time
-import socket
-import json
 import logging
-from pathlib import Path
 from typing import Optional
 
-# Импорт общих модулей из локальной директории
-from common.models import (
-    PCConfiguration, Motherboard, CPU, RAMModule, Storage, GPU, NetworkAdapter, PSU
-)
-from common.kafka_config import KafkaConfig
-
-try:
-    from kafka import KafkaProducer
-    from kafka.errors import KafkaError
-except ImportError:
-    print("Ошибка: Не установлен kafka-python. Установите: pip install kafka-python")
-    sys.exit(1)
-
-try:
-    import wmi
-except ImportError:
-    print("Ошибка: Не установлен WMI. Установите: pip install WMI")
-    sys.exit(1)
-
-
-class WindowsHardwareCollector:
-    """Класс для сбора информации о комплектующих в Windows"""
-    
-    def __init__(self):
-        self.wmi_conn = wmi.WMI()
-        self.hostname = socket.gethostname()
-    
-    def get_pc_id(self) -> str:
-        """Получить уникальный идентификатор ПК"""
-        try:
-            # Используем серийный номер материнской платы + имя ПК
-            motherboard = self.wmi_conn.Win32_BaseBoard()[0]
-            serial = motherboard.SerialNumber.strip()
-            if serial and serial != "To be filled by O.E.M.":
-                return f"{serial}_{self.hostname}"
-            else:
-                # Если серийный номер недоступен, используем UUID системы
-                system = self.wmi_conn.Win32_ComputerSystemProduct()[0]
-                uuid = system.UUID
-                return f"{uuid}_{self.hostname}"
-        except Exception as e:
-            logging.error(f"Ошибка получения PC ID: {e}")
-            return f"UNKNOWN_{self.hostname}"
-    
-    def get_motherboard(self) -> Optional[Motherboard]:
-        """Получить информацию о материнской плате"""
-        try:
-            board = self.wmi_conn.Win32_BaseBoard()[0]
-            return Motherboard(
-                serial_number=board.SerialNumber.strip() if board.SerialNumber else None,
-                model=board.Product.strip() if board.Product else None,
-                manufacturer=board.Manufacturer.strip() if board.Manufacturer else None,
-                product=board.Product.strip() if board.Product else None
-            )
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о материнской плате: {e}")
-            return None
-    
-    def get_cpu(self) -> Optional[CPU]:
-        """Получить информацию о процессоре"""
-        try:
-            cpu = self.wmi_conn.Win32_Processor()[0]
-            return CPU(
-                serial_number=None,  # В Windows обычно недоступен
-                model=cpu.Name.strip() if cpu.Name else None,
-                manufacturer=cpu.Manufacturer.strip() if cpu.Manufacturer else None,
-                name=cpu.Name.strip() if cpu.Name else None,
-                cores=cpu.NumberOfCores if cpu.NumberOfCores else None,
-                threads=cpu.NumberOfLogicalProcessors if cpu.NumberOfLogicalProcessors else None
-            )
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о процессоре: {e}")
-            return None
-    
-    def get_ram_modules(self) -> list[RAMModule]:
-        """Получить информацию о модулях оперативной памяти"""
-        modules = []
-        try:
-            ram_list = self.wmi_conn.Win32_PhysicalMemory()
-            for idx, ram in enumerate(ram_list):
-                size_gb = None
-                if ram.Capacity:
-                    size_gb = int(ram.Capacity) // (1024 ** 3)
-                
-                module = RAMModule(
-                    serial_number=ram.SerialNumber.strip() if ram.SerialNumber else None,
-                    model=ram.PartNumber.strip() if ram.PartNumber else None,
-                    size_gb=size_gb,
-                    slot=ram.DeviceLocator.strip() if ram.DeviceLocator else f"Slot{idx}",
-                    speed=f"{ram.Speed}MHz" if ram.Speed else None,
-                    manufacturer=ram.Manufacturer.strip() if ram.Manufacturer else None
-                )
-                modules.append(module)
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о RAM: {e}")
-        return modules
-    
-    def get_storage_devices(self) -> list[Storage]:
-        """Получить информацию о накопителях"""
-        devices = []
-        try:
-            # Получаем физические диски
-            disks = self.wmi_conn.Win32_DiskDrive()
-            for disk in disks:
-                size_gb = None
-                if disk.Size:
-                    size_gb = int(disk.Size) // (1024 ** 3)
-                
-                # Определяем тип интерфейса
-                interface = disk.InterfaceType.strip() if disk.InterfaceType else None
-                storage_type = "HDD"
-                if "SSD" in (disk.MediaType or "").upper() or "SSD" in (disk.Model or "").upper():
-                    storage_type = "SSD"
-                if "NVMe" in (disk.InterfaceType or "").upper() or "NVMe" in (disk.Model or "").upper():
-                    storage_type = "NVMe"
-                    interface = "NVMe"
-                
-                device = Storage(
-                    serial_number=disk.SerialNumber.strip() if disk.SerialNumber else None,
-                    model=disk.Model.strip() if disk.Model else None,
-                    size_gb=size_gb,
-                    interface=interface,
-                    type=storage_type
-                )
-                devices.append(device)
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о накопителях: {e}")
-        return devices
-    
-    def get_gpu(self) -> Optional[GPU]:
-        """Получить информацию о видеокарте"""
-        try:
-            gpus = self.wmi_conn.Win32_VideoController()
-            # Берем первую дискретную видеокарту (не встроенную)
-            for gpu in gpus:
-                # Пропускаем встроенные видеокарты Intel
-                if "Intel" in (gpu.Name or ""):
-                    continue
-                
-                memory_gb = None
-                if gpu.AdapterRAM:
-                    memory_gb = int(gpu.AdapterRAM) // (1024 ** 3)
-                
-                return GPU(
-                    serial_number=None,  # В Windows обычно недоступен через WMI
-                    model=gpu.Name.strip() if gpu.Name else None,
-                    manufacturer=gpu.AdapterCompatibility.strip() if gpu.AdapterCompatibility else None,
-                    name=gpu.Name.strip() if gpu.Name else None,
-                    memory_gb=memory_gb
-                )
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о видеокарте: {e}")
-        return None
-    
-    def get_network_adapters(self) -> list[NetworkAdapter]:
-        """Получить информацию о сетевых адаптерах"""
-        adapters = []
-        try:
-            nics = self.wmi_conn.Win32_NetworkAdapterConfiguration(IPEnabled=True)
-            for nic in nics:
-                if nic.MACAddress:
-                    adapter = NetworkAdapter(
-                        mac_address=nic.MACAddress.strip(),
-                        name=nic.Description.strip() if nic.Description else None,
-                        manufacturer=None  # Можно получить через Win32_NetworkAdapter
-                    )
-                    adapters.append(adapter)
-        except Exception as e:
-            logging.error(f"Ошибка получения информации о сетевых адаптерах: {e}")
-        return adapters
-    
-    def get_psu(self) -> Optional[PSU]:
-        """Получить информацию о блоке питания (обычно недоступно через WMI)"""
-        # В Windows информация о БП обычно недоступна через стандартные API
-        return None
-    
-    def collect_configuration(self) -> PCConfiguration:
-        """Собрать полную конфигурацию ПК"""
-        pc_id = self.get_pc_id()
-        
-        config = PCConfiguration(
-            pc_id=pc_id,
-            hostname=self.hostname,
-            motherboard=self.get_motherboard(),
-            cpu=self.get_cpu(),
-            ram_modules=self.get_ram_modules(),
-            storage_devices=self.get_storage_devices(),
-            gpu=self.get_gpu(),
-            network_adapters=self.get_network_adapters(),
-            psu=self.get_psu()
-        )
-        
-        return config
+from domain.models import PCConfiguration
+from kafka_layer import KafkaConfig, KafkaClient
+from system import WindowsHardwareCollector
 
 
 class PCGuardianAgent:
@@ -217,9 +29,12 @@ class PCGuardianAgent:
             scan_interval: Интервал сканирования в секундах (по умолчанию 180 секунд = 3 минуты)
         """
         self.scan_interval = scan_interval
+        # Слой ОС / WMI
         self.collector = WindowsHardwareCollector()
+
+        # Слой Kafka
         self.kafka_config = KafkaConfig(config_file)
-        self.producer = None
+        self.kafka_client = KafkaClient(self.kafka_config)
         self.running = False
         
         # Настройка логирования
@@ -234,48 +49,14 @@ class PCGuardianAgent:
         self.logger = logging.getLogger(__name__)
     
     def _create_producer(self):
-        """Создать Kafka Producer"""
-        try:
-            config = self.kafka_config.get_producer_config()
-            self.producer = KafkaProducer(
-                **config,
-                value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8'),
-                retries=5,
-                acks='all',
-                request_timeout_ms=30000
-            )
-            self.logger.info("Kafka Producer создан успешно")
-        except Exception as e:
-            self.logger.error(f"Ошибка создания Kafka Producer: {e}")
-            raise
+        """Совместимость со старым интерфейсом: делегируем в kafka_layer."""
+        # Оставлено для обратной совместимости. Новому коду лучше вызывать kafka_client напрямую.
+        return
     
     def _send_configuration(self, config: PCConfiguration):
         """Отправить конфигурацию в Kafka"""
-        try:
-            if not self.producer:
-                self._create_producer()
-            
-            data = config.to_dict()
-            future = self.producer.send(
-                self.kafka_config.topic,
-                value=data,
-                key=config.pc_id.encode('utf-8')
-            )
-            
-            # Ждем подтверждения
-            record_metadata = future.get(timeout=10)
-            self.logger.info(
-                f"Конфигурация отправлена: PC={config.pc_id}, "
-                f"Topic={record_metadata.topic}, "
-                f"Partition={record_metadata.partition}, "
-                f"Offset={record_metadata.offset}"
-            )
-        except KafkaError as e:
-            self.logger.error(f"Ошибка отправки в Kafka: {e}")
-            # Пересоздаем producer при ошибке
-            self.producer = None
-        except Exception as e:
-            self.logger.error(f"Неожиданная ошибка при отправке: {e}")
+        # Вся логика отправки инкапсулирована в KafkaClient
+        self.kafka_client.send_configuration(config)
     
     def scan_and_send(self):
         """Сканировать конфигурацию и отправить в Kafka"""
@@ -311,8 +92,8 @@ class PCGuardianAgent:
     def stop(self):
         """Остановить агент"""
         self.running = False
-        if self.producer:
-            self.producer.close()
+        if self.kafka_client:
+            self.kafka_client.close()
         self.logger.info("Агент остановлен")
 
 

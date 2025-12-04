@@ -208,13 +208,13 @@ class WindowsHardwareCollector:
 class PCGuardianAgent:
     """Основной класс агента PC-Guardian для Windows"""
     
-    def __init__(self, config_file: Optional[str] = None, scan_interval: int = 3600):
+    def __init__(self, config_file: Optional[str] = None, scan_interval: int = 180):
         """
         Инициализация агента
         
         Args:
             config_file: Путь к файлу конфигурации Kafka
-            scan_interval: Интервал сканирования в секундах (по умолчанию 1 час)
+            scan_interval: Интервал сканирования в секундах (по умолчанию 180 секунд = 3 минуты)
         """
         self.scan_interval = scan_interval
         self.collector = WindowsHardwareCollector()
@@ -322,7 +322,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='PC-Guardian Agent для Windows')
     parser.add_argument('--config', type=str, help='Путь к файлу конфигурации Kafka')
-    parser.add_argument('--interval', type=int, default=3600, help='Интервал сканирования в секундах')
+    parser.add_argument('--interval', type=int, default=180, help='Интервал сканирования в секундах (по умолчанию 180 = 3 минуты)')
     parser.add_argument('--once', action='store_true', help='Выполнить одно сканирование и выйти')
     
     args = parser.parse_args()

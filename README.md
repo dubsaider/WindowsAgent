@@ -61,14 +61,41 @@ python agent.py --once
 
 ### Постоянная работа:
 ```bash
-python agent.py --interval 3600
+python agent.py --interval 180
 ```
 
-Где `--interval` - интервал сканирования в секундах (по умолчанию 3600 = 1 час).
+Где `--interval` - интервал сканирования в секундах (по умолчанию 180 = 3 минуты).
 
 ### С указанием конфигурации:
 ```bash
 python agent.py --config config.json --interval 1800
+```
+
+## Сборка в один EXE (PyInstaller)
+
+Для дистрибуции агента без установки Python можно собрать одиночный exe-файл.
+
+1. Убедитесь, что зависимости установлены:
+```bash
+pip install -r requirements.txt
+```
+
+2. Запустите скрипт сборки для Windows:
+```bash
+build_agent.bat
+```
+
+Он:
+- установит/обновит `pyinstaller`,
+- соберёт exe по спецификации `build_agent.spec`,
+- положит результат в директорию `dist\PCGuardianAgent.exe`.
+
+3. На целевой машине достаточно:
+- скопировать `PCGuardianAgent.exe`,
+- положить рядом `config.json` (по образцу `config.json.example`),
+- запустить (по умолчанию каждые 3 минуты):
+```bash
+PCGuardianAgent.exe --config config.json
 ```
 
 ## Установка как служба Windows

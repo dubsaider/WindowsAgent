@@ -173,71 +173,201 @@ class WindowsHardwareCollector:
         """Информация о БП обычно недоступна через стандартный WMI."""
         return None
 
+    def _get_pnp_device_info(self, device_id: str) -> dict:
+        """Получить детальную информацию об устройстве через Win32_PnPEntity"""
+        try:
+            pnp_devices = self.wmi_conn.Win32_PnPEntity(DeviceID=device_id)
+            if pnp_devices:
+                device = pnp_devices[0]
+                return {
+                    "manufacturer": device.Manufacturer.strip() if device.Manufacturer else None,
+                    "name": device.Name.strip() if device.Name else None,
+                    "description": device.Description.strip() if device.Description else None,
+                    "service": device.Service.strip() if device.Service else None,
+                }
+        except Exception:
+            pass
+        return {}
+
+    def _detect_connection_type(self, device_id: str, pnp_class: str) -> Optional[str]:
+        """Определить тип подключения устройства"""
+        if not device_id:
+            return None
+        
+        device_id_upper = device_id.upper()
+        pnp_class_upper = (pnp_class or "").upper()
+        
+        # USB устройства
+        if "USB" in device_id_upper or "USB\\" in device_id_upper:
+            if "BLUETOOTH" in device_id_upper:
+                return "Bluetooth"
+            return "USB"
+        
+        # Bluetooth
+        if "BLUETOOTH" in device_id_upper or "BTH" in device_id_upper:
+            return "Bluetooth"
+        
+        # PS/2
+        if "PS/2" in device_id_upper or "PS2" in device_id_upper or "PNP03" in device_id_upper:
+            return "PS/2"
+        
+        # Для мониторов
+        if "MONITOR" in pnp_class_upper:
+            if "DISPLAYPORT" in device_id_upper or "DP" in device_id_upper:
+                return "DisplayPort"
+            if "HDMI" in device_id_upper:
+                return "HDMI"
+            if "DVI" in device_id_upper:
+                return "DVI"
+            if "VGA" in device_id_upper:
+                return "VGA"
+        
+        # Сетевые принтеры
+        if "NETWORK" in device_id_upper or "TCP" in device_id_upper or "HTTP" in device_id_upper:
+            return "Network"
+        
+        return None
+
     def get_peripherals(self) -> List[PeripheralDevice]:
         peripherals: List[PeripheralDevice] = []
+        seen_devices = set()  # Для избежания дубликатов
 
+        # Мониторы - используем Win32_PnPEntity для более детальной информации
         try:
-            for mon in self.wmi_conn.Win32_DesktopMonitor():
-                name = (mon.Name or mon.Caption or "").strip() or None
-                manufacturer = getattr(mon, "MonitorManufacturer", None)
-                manufacturer = manufacturer.strip() if isinstance(manufacturer, str) else manufacturer
-                peripherals.append(
-                    PeripheralDevice(
-                        category="monitor",
-                        name=name,
-                        manufacturer=manufacturer,
-                        description=mon.Caption.strip() if mon.Caption else None,
-                        connection_type=None,
+            pnp_monitors = self.wmi_conn.Win32_PnPEntity(Class="Monitor")
+            for pnp_mon in pnp_monitors:
+                device_id = pnp_mon.DeviceID
+                if device_id in seen_devices:
+                    continue
+                seen_devices.add(device_id)
+                
+                name = pnp_mon.Name.strip() if pnp_mon.Name else None
+                manufacturer = pnp_mon.Manufacturer.strip() if pnp_mon.Manufacturer else None
+                description = pnp_mon.Description.strip() if pnp_mon.Description else None
+                connection_type = self._detect_connection_type(device_id, "Monitor")
+                
+                # Дополнительная информация из Win32_DesktopMonitor если доступна
+                try:
+                    desktop_mon = self.wmi_conn.Win32_DesktopMonitor()
+                    if desktop_mon:
+                        mon = desktop_mon[0]
+                        if not name and mon.Name:
+                            name = mon.Name.strip()
+                        if not manufacturer and hasattr(mon, "MonitorManufacturer"):
+                            manufacturer = mon.MonitorManufacturer.strip() if mon.MonitorManufacturer else None
+                except Exception:
+                    pass
+                
+                if name and name.lower() not in ["generic pnp monitor", "универсальный монитор pnp"]:
+                    peripherals.append(
+                        PeripheralDevice(
+                            category="monitor",
+                            name=name,
+                            manufacturer=manufacturer,
+                            description=description,
+                            connection_type=connection_type,
+                        )
                     )
-                )
         except Exception as e:
             logging.error(f"Ошибка получения информации о мониторах: {e}")
 
+        # Клавиатуры - используем Win32_PnPEntity
         try:
-            for kb in self.wmi_conn.Win32_Keyboard():
-                peripherals.append(
-                    PeripheralDevice(
-                        category="keyboard",
-                        name=kb.Description.strip() if kb.Description else None,
-                        manufacturer=None,
-                        description=kb.Name.strip() if kb.Name else None,
-                        connection_type=None,
+            pnp_keyboards = self.wmi_conn.Win32_PnPEntity(Class="Keyboard")
+            for pnp_kb in pnp_keyboards:
+                device_id = pnp_kb.DeviceID
+                if device_id in seen_devices:
+                    continue
+                seen_devices.add(device_id)
+                
+                name = pnp_kb.Name.strip() if pnp_kb.Name else None
+                manufacturer = pnp_kb.Manufacturer.strip() if pnp_kb.Manufacturer else None
+                description = pnp_kb.Description.strip() if pnp_kb.Description else None
+                connection_type = self._detect_connection_type(device_id, "Keyboard")
+                
+                # Пропускаем виртуальные клавиатуры
+                if name and "virtual" not in name.lower() and "виртуальн" not in name.lower():
+                    peripherals.append(
+                        PeripheralDevice(
+                            category="keyboard",
+                            name=name,
+                            manufacturer=manufacturer,
+                            description=description,
+                            connection_type=connection_type,
+                        )
                     )
-                )
         except Exception as e:
             logging.error(f"Ошибка получения информации о клавиатурах: {e}")
 
+        # Мыши и указательные устройства - используем Win32_PnPEntity
         try:
-            for pd in self.wmi_conn.Win32_PointingDevice():
-                peripherals.append(
-                    PeripheralDevice(
-                        category="mouse",
-                        name=pd.Description.strip() if pd.Description else None,
-                        manufacturer=None,
-                        description=pd.Name.strip() if pd.Name else None,
-                        connection_type=None,
+            pnp_mice = self.wmi_conn.Win32_PnPEntity(Class="Mouse")
+            for pnp_mouse in pnp_mice:
+                device_id = pnp_mouse.DeviceID
+                if device_id in seen_devices:
+                    continue
+                seen_devices.add(device_id)
+                
+                name = pnp_mouse.Name.strip() if pnp_mouse.Name else None
+                manufacturer = pnp_mouse.Manufacturer.strip() if pnp_mouse.Manufacturer else None
+                description = pnp_mouse.Description.strip() if pnp_mouse.Description else None
+                connection_type = self._detect_connection_type(device_id, "Mouse")
+                
+                # Пропускаем виртуальные мыши
+                if name and "virtual" not in name.lower() and "виртуальн" not in name.lower():
+                    peripherals.append(
+                        PeripheralDevice(
+                            category="mouse",
+                            name=name,
+                            manufacturer=manufacturer,
+                            description=description,
+                            connection_type=connection_type,
+                        )
                     )
-                )
         except Exception as e:
-            logging.error(f"Ошибка получения информации об указательных устройствах: {e}")
+            logging.error(f"Ошибка получения информации о мышах: {e}")
 
+        # Принтеры - улучшенная информация
         try:
             for pr in self.wmi_conn.Win32_Printer():
+                name = pr.Name.strip() if pr.Name else None
                 manufacturer = getattr(pr, "Manufacturer", None)
                 manufacturer = manufacturer.strip() if isinstance(manufacturer, str) else manufacturer
-                description = None
+                
+                # Формируем описание из доступной информации
+                description_parts = []
                 if getattr(pr, "Location", None):
-                    description = pr.Location.strip()
-                elif getattr(pr, "Comment", None):
-                    description = pr.Comment.strip()
-
+                    description_parts.append(f"Location: {pr.Location.strip()}")
+                if getattr(pr, "Comment", None):
+                    description_parts.append(pr.Comment.strip())
+                if getattr(pr, "DriverName", None):
+                    description_parts.append(f"Driver: {pr.DriverName.strip()}")
+                if getattr(pr, "PortName", None):
+                    port = pr.PortName.strip()
+                    connection_type = None
+                    if "USB" in port.upper():
+                        connection_type = "USB"
+                    elif "TCP" in port.upper() or "IP" in port.upper() or "HTTP" in port.upper():
+                        connection_type = "Network"
+                    elif "LPT" in port.upper():
+                        connection_type = "Parallel"
+                    elif "COM" in port.upper():
+                        connection_type = "Serial"
+                    
+                    description_parts.append(f"Port: {port}")
+                
+                description = " | ".join(description_parts) if description_parts else None
+                
+                # Пропускаем виртуальные принтеры (OneNote, XPS, PDF) если они не нужны
+                # Но оставим их, так как пользователь может захотеть видеть все принтеры
+                
                 peripherals.append(
                     PeripheralDevice(
                         category="printer",
-                        name=pr.Name.strip() if pr.Name else None,
+                        name=name,
                         manufacturer=manufacturer,
                         description=description,
-                        connection_type=None,
+                        connection_type=connection_type,
                     )
                 )
         except Exception as e:

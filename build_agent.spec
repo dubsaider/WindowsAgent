@@ -7,7 +7,12 @@ PyInstaller spec-файл для сборки агента PC-Guardian в оди
     pyinstaller build_agent.spec
 """
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
+
+# Автоматический сбор всех подмодулей kafka
+kafka_hiddenimports = collect_submodules('kafka')
 
 a = Analysis(
     ['agent.py'],
@@ -22,14 +27,10 @@ a = Analysis(
         'wmi',
         'win32com',
         'win32com.client',
-        # kafka-python (модуль kafka)
-        'kafka',
-        'kafka.errors',
-        'kafka.producer',
-        'kafka.producer.kafka',
-        'kafka.client',
-        'kafka.consumer',
-        'kafka.partitioner',
+        # kafka-python - все подмодули собираются автоматически
+    ] + kafka_hiddenimports + [
+        # Версия агента
+        '__version__',
     ],
     hookspath=[],
     hooksconfig={},
@@ -54,7 +55,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # Не показывать консольное окно при запуске
+    console=True,  # Показывать консольное окно для отладки (можно изменить на False после тестирования)
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,

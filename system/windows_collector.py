@@ -23,6 +23,11 @@ from domain.models import (
     PeripheralDevice,
 )
 
+try:
+    from __version__ import __version__ as AGENT_VERSION
+except ImportError:
+    AGENT_VERSION = "unknown"
+
 
 class WindowsHardwareCollector:
     """Класс для сбора информации о комплектующих и периферии в Windows"""
@@ -246,6 +251,7 @@ class WindowsHardwareCollector:
         return PCConfiguration(
             pc_id=pc_id,
             hostname=self.hostname,
+            agent_version=AGENT_VERSION,
             motherboard=self.get_motherboard(),
             cpu=self.get_cpu(),
             ram_modules=self.get_ram_modules(),

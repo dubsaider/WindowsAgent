@@ -114,6 +114,7 @@ class PCConfiguration:
 
     pc_id: str  # Уникальный идентификатор ПК
     hostname: str
+    agent_version: Optional[str] = None  # Версия агента
     motherboard: Optional[Motherboard] = None
     cpu: Optional[CPU] = None
     ram_modules: List[RAMModule] = None
@@ -141,6 +142,7 @@ class PCConfiguration:
         result = {
             "pc_id": self.pc_id,
             "hostname": self.hostname,
+            "agent_version": self.agent_version,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }
 
@@ -173,6 +175,7 @@ class PCConfiguration:
         config = cls(
             pc_id=data.get("pc_id"),
             hostname=data.get("hostname"),
+            agent_version=data.get("agent_version"),
             timestamp=datetime.fromisoformat(data["timestamp"])
             if data.get("timestamp")
             else None,

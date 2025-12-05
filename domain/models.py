@@ -95,6 +95,30 @@ class PSU:
 
 
 @dataclass
+class SystemInfo:
+    """Инфраструктурная информация о системе"""
+
+    domain: Optional[str] = None  # Доменное имя (например, example.com)
+    domain_role: Optional[str] = None  # Роль в домене (Workstation, Member Server, Domain Controller и т.д.)
+    workgroup: Optional[str] = None  # Рабочая группа (если не в домене)
+    part_of_domain: Optional[bool] = None  # Является ли компьютер членом домена
+    manufacturer: Optional[str] = None  # Производитель системы
+    model: Optional[str] = None  # Модель системы
+    system_type: Optional[str] = None  # Тип системы (x64-based PC и т.д.)
+    total_physical_memory_gb: Optional[float] = None  # Общий объем физической памяти в GB
+    os_name: Optional[str] = None  # Название ОС
+    os_version: Optional[str] = None  # Версия ОС
+    os_build: Optional[str] = None  # Сборка ОС
+    os_architecture: Optional[str] = None  # Архитектура ОС (64-bit, 32-bit)
+    os_install_date: Optional[str] = None  # Дата установки ОС
+    logged_in_user: Optional[str] = None  # Текущий пользователь
+    timezone: Optional[str] = None  # Часовой пояс
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class PeripheralDevice:
     """Устройство периферии (монитор, клавиатура, мышь, принтер, камера, аудио и т.п.)"""
 
@@ -123,6 +147,7 @@ class PCConfiguration:
     network_adapters: List[NetworkAdapter] = None
     psu: Optional[PSU] = None
     peripherals: List[PeripheralDevice] = None
+    system_info: Optional["SystemInfo"] = None  # Инфраструктурная информация
     timestamp: Optional[datetime] = None
 
     def __post_init__(self):
@@ -162,6 +187,8 @@ class PCConfiguration:
             result["psu"] = self.psu.to_dict()
         if self.peripherals:
             result["peripherals"] = [p.to_dict() for p in self.peripherals]
+        if self.system_info:
+            result["system_info"] = self.system_info.to_dict()
 
         return result
 
@@ -199,6 +226,8 @@ class PCConfiguration:
             config.psu = PSU(**data["psu"])
         if data.get("peripherals"):
             config.peripherals = [PeripheralDevice(**p) for p in data["peripherals"]]
+        if data.get("system_info"):
+            config.system_info = SystemInfo(**data["system_info"])
 
         return config
 

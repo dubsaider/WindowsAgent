@@ -96,9 +96,9 @@ class PSU:
 
 @dataclass
 class PeripheralDevice:
-    """Устройство периферии (монитор, клавиатура, мышь, принтер и т.п.)"""
+    """Устройство периферии (монитор, клавиатура, мышь, принтер, камера, аудио и т.п.)"""
 
-    category: str  # monitor, keyboard, mouse, printer, other
+    category: str  # monitor, keyboard, mouse, printer, camera, microphone, speaker, audio, other
     name: Optional[str] = None
     manufacturer: Optional[str] = None
     description: Optional[str] = None

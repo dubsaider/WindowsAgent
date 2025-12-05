@@ -228,102 +228,164 @@ class WindowsHardwareCollector:
         
         return None
 
+    def _is_virtual_device(self, name: str, device_id: str = None) -> bool:
+        """Проверка, является ли устройство виртуальным"""
+        if not name:
+            return False
+        name_lower = name.lower()
+        # Более точные проверки на виртуальные устройства
+        virtual_patterns = [
+            "virtual", "виртуальн",
+            "vmware", "virtualbox", "hyper-v",
+            "remote desktop", "rdp",
+            "microsoft virtual", "microsoft remote",
+            "microsoft print to pdf",  # Виртуальный принтер
+            "microsoft xps document writer",  # Виртуальный принтер
+            "onenote",  # Виртуальный принтер
+        ]
+        return any(pattern in name_lower for pattern in virtual_patterns)
+
+    def _add_peripheral(self, peripherals: List[PeripheralDevice], seen_devices: set,
+                       category: str, name: Optional[str], manufacturer: Optional[str],
+                       description: Optional[str], connection_type: Optional[str],
+                       device_id: str = None) -> bool:
+        """Добавить периферийное устройство, избегая дубликатов"""
+        if not name:
+            return False
+        
+        # Создаем уникальный ключ для устройства
+        key = f"{category}_{name}_{manufacturer or ''}"
+        if device_id:
+            key = device_id
+        
+        if key in seen_devices:
+            return False
+        
+        # Пропускаем только явно виртуальные устройства
+        if self._is_virtual_device(name, device_id):
+            return False
+        
+        seen_devices.add(key)
+        peripherals.append(
+            PeripheralDevice(
+                category=category,
+                name=name,
+                manufacturer=manufacturer,
+                description=description,
+                connection_type=connection_type,
+            )
+        )
+        return True
+
     def get_peripherals(self) -> List[PeripheralDevice]:
         peripherals: List[PeripheralDevice] = []
         seen_devices = set()  # Для избежания дубликатов
 
-        # Мониторы - используем Win32_PnPEntity для более детальной информации
+        # Получаем все PnP устройства и фильтруем по PNPClass
+        pnp_devices_by_class = {}
         try:
-            pnp_monitors = self.wmi_conn.Win32_PnPEntity(Class="Monitor")
-            for pnp_mon in pnp_monitors:
+            all_pnp_devices = self.wmi_conn.Win32_PnPEntity()
+            for device in all_pnp_devices:
+                pnp_class = getattr(device, "PNPClass", None)
+                if pnp_class:
+                    if pnp_class not in pnp_devices_by_class:
+                        pnp_devices_by_class[pnp_class] = []
+                    pnp_devices_by_class[pnp_class].append(device)
+        except Exception as e:
+            logging.warning(f"Не удалось получить PnP устройства: {e}")
+
+        # Мониторы - используем оба метода для максимального покрытия
+        try:
+            # Сначала собираем из PnP устройств
+            monitors_pnp = pnp_devices_by_class.get("Monitor", [])
+            for pnp_mon in monitors_pnp:
                 device_id = pnp_mon.DeviceID
-                if device_id in seen_devices:
-                    continue
-                seen_devices.add(device_id)
-                
                 name = pnp_mon.Name.strip() if pnp_mon.Name else None
                 manufacturer = pnp_mon.Manufacturer.strip() if pnp_mon.Manufacturer else None
                 description = pnp_mon.Description.strip() if pnp_mon.Description else None
                 connection_type = self._detect_connection_type(device_id, "Monitor")
                 
-                # Дополнительная информация из Win32_DesktopMonitor если доступна
-                try:
-                    desktop_mon = self.wmi_conn.Win32_DesktopMonitor()
-                    if desktop_mon:
-                        mon = desktop_mon[0]
-                        if not name and mon.Name:
-                            name = mon.Name.strip()
-                        if not manufacturer and hasattr(mon, "MonitorManufacturer"):
-                            manufacturer = mon.MonitorManufacturer.strip() if mon.MonitorManufacturer else None
-                except Exception:
-                    pass
+                self._add_peripheral(peripherals, seen_devices, "monitor", name, 
+                                   manufacturer, description, connection_type, device_id)
+            
+            # Затем дополняем из Win32_DesktopMonitor (может быть больше информации)
+            try:
+                desktop_monitors = self.wmi_conn.Win32_DesktopMonitor()
+                for mon in desktop_monitors:
+                    device_id = getattr(mon, "DeviceID", None) or f"monitor_desktop_{len(peripherals)}"
+                    name = (mon.Name or mon.Caption or "").strip() or None
+                    manufacturer = getattr(mon, "MonitorManufacturer", None)
+                    manufacturer = manufacturer.strip() if isinstance(manufacturer, str) else manufacturer
+                    description = mon.Caption.strip() if mon.Caption else None
+                    connection_type = None
+                    
+                    self._add_peripheral(peripherals, seen_devices, "monitor", name,
+                                       manufacturer, description, connection_type, device_id)
+            except Exception:
+                pass  # Если не удалось получить, продолжаем
                 
-                if name and name.lower() not in ["generic pnp monitor", "универсальный монитор pnp"]:
-                    peripherals.append(
-                        PeripheralDevice(
-                            category="monitor",
-                            name=name,
-                            manufacturer=manufacturer,
-                            description=description,
-                            connection_type=connection_type,
-                        )
-                    )
         except Exception as e:
             logging.error(f"Ошибка получения информации о мониторах: {e}")
 
-        # Клавиатуры - используем Win32_PnPEntity
+        # Клавиатуры - используем оба метода
         try:
-            pnp_keyboards = self.wmi_conn.Win32_PnPEntity(Class="Keyboard")
-            for pnp_kb in pnp_keyboards:
+            # Сначала из PnP устройств
+            keyboards_pnp = pnp_devices_by_class.get("Keyboard", [])
+            for pnp_kb in keyboards_pnp:
                 device_id = pnp_kb.DeviceID
-                if device_id in seen_devices:
-                    continue
-                seen_devices.add(device_id)
-                
                 name = pnp_kb.Name.strip() if pnp_kb.Name else None
                 manufacturer = pnp_kb.Manufacturer.strip() if pnp_kb.Manufacturer else None
                 description = pnp_kb.Description.strip() if pnp_kb.Description else None
                 connection_type = self._detect_connection_type(device_id, "Keyboard")
                 
-                # Пропускаем виртуальные клавиатуры
-                if name and "virtual" not in name.lower() and "виртуальн" not in name.lower():
-                    peripherals.append(
-                        PeripheralDevice(
-                            category="keyboard",
-                            name=name,
-                            manufacturer=manufacturer,
-                            description=description,
-                            connection_type=connection_type,
-                        )
-                    )
+                self._add_peripheral(peripherals, seen_devices, "keyboard", name,
+                                   manufacturer, description, connection_type, device_id)
+            
+            # Затем из Win32_Keyboard
+            try:
+                keyboards_wmi = self.wmi_conn.Win32_Keyboard()
+                for kb in keyboards_wmi:
+                    device_id = getattr(kb, "DeviceID", None) or f"keyboard_wmi_{len(peripherals)}"
+                    name = kb.Description.strip() if kb.Description else None
+                    description = kb.Name.strip() if kb.Name else None
+                    connection_type = None
+                    
+                    self._add_peripheral(peripherals, seen_devices, "keyboard", name,
+                                       None, description, connection_type, device_id)
+            except Exception:
+                pass
+                
         except Exception as e:
             logging.error(f"Ошибка получения информации о клавиатурах: {e}")
 
-        # Мыши и указательные устройства - используем Win32_PnPEntity
+        # Мыши и указательные устройства - используем оба метода
         try:
-            pnp_mice = self.wmi_conn.Win32_PnPEntity(Class="Mouse")
-            for pnp_mouse in pnp_mice:
+            # Сначала из PnP устройств
+            mice_pnp = pnp_devices_by_class.get("Mouse", [])
+            for pnp_mouse in mice_pnp:
                 device_id = pnp_mouse.DeviceID
-                if device_id in seen_devices:
-                    continue
-                seen_devices.add(device_id)
-                
                 name = pnp_mouse.Name.strip() if pnp_mouse.Name else None
                 manufacturer = pnp_mouse.Manufacturer.strip() if pnp_mouse.Manufacturer else None
                 description = pnp_mouse.Description.strip() if pnp_mouse.Description else None
                 connection_type = self._detect_connection_type(device_id, "Mouse")
                 
-                # Пропускаем виртуальные мыши
-                if name and "virtual" not in name.lower() and "виртуальн" not in name.lower():
-                    peripherals.append(
-                        PeripheralDevice(
-                            category="mouse",
-                            name=name,
-                            manufacturer=manufacturer,
-                            description=description,
-                            connection_type=connection_type,
-                        )
-                    )
+                self._add_peripheral(peripherals, seen_devices, "mouse", name,
+                                   manufacturer, description, connection_type, device_id)
+            
+            # Затем из Win32_PointingDevice
+            try:
+                mice_wmi = self.wmi_conn.Win32_PointingDevice()
+                for pd in mice_wmi:
+                    device_id = getattr(pd, "DeviceID", None) or f"mouse_wmi_{len(peripherals)}"
+                    name = pd.Description.strip() if pd.Description else None
+                    description = pd.Name.strip() if pd.Name else None
+                    connection_type = None
+                    
+                    self._add_peripheral(peripherals, seen_devices, "mouse", name,
+                                       None, description, connection_type, device_id)
+            except Exception:
+                pass
+                
         except Exception as e:
             logging.error(f"Ошибка получения информации о мышах: {e}")
 
@@ -357,21 +419,83 @@ class WindowsHardwareCollector:
                     description_parts.append(f"Port: {port}")
                 
                 description = " | ".join(description_parts) if description_parts else None
+                device_id = f"printer_{name or len(peripherals)}"
                 
-                # Пропускаем виртуальные принтеры (OneNote, XPS, PDF) если они не нужны
-                # Но оставим их, так как пользователь может захотеть видеть все принтеры
-                
-                peripherals.append(
-                    PeripheralDevice(
-                        category="printer",
-                        name=name,
-                        manufacturer=manufacturer,
-                        description=description,
-                        connection_type=connection_type,
-                    )
-                )
+                self._add_peripheral(peripherals, seen_devices, "printer", name,
+                                   manufacturer, description, connection_type, device_id)
         except Exception as e:
             logging.error(f"Ошибка получения информации о принтерах: {e}")
+
+        # Веб-камеры и камеры
+        try:
+            cameras = pnp_devices_by_class.get("Camera", []) + pnp_devices_by_class.get("Image", [])
+            for cam in cameras:
+                device_id = cam.DeviceID
+                name = cam.Name.strip() if cam.Name else None
+                # Пропускаем виртуальные камеры
+                if name and ("virtual" in name.lower() or "виртуальн" in name.lower()):
+                    continue
+                manufacturer = cam.Manufacturer.strip() if cam.Manufacturer else None
+                description = cam.Description.strip() if cam.Description else None
+                connection_type = self._detect_connection_type(device_id, "Camera")
+                
+                self._add_peripheral(peripherals, seen_devices, "camera", name,
+                                   manufacturer, description, connection_type, device_id)
+        except Exception as e:
+            logging.error(f"Ошибка получения информации о камерах: {e}")
+
+        # Аудио устройства (микрофоны, динамики)
+        try:
+            audio_devices = pnp_devices_by_class.get("AudioEndpoint", []) + \
+                          pnp_devices_by_class.get("Media", []) + \
+                          pnp_devices_by_class.get("Sound", [])
+            for audio in audio_devices:
+                device_id = audio.DeviceID
+                name = audio.Name.strip() if audio.Name else None
+                manufacturer = audio.Manufacturer.strip() if audio.Manufacturer else None
+                description = audio.Description.strip() if audio.Description else None
+                connection_type = self._detect_connection_type(device_id, "Audio")
+                
+                # Определяем тип аудио устройства
+                category = "audio"
+                if name:
+                    name_lower = name.lower()
+                    if "microphone" in name_lower or "микрофон" in name_lower:
+                        category = "microphone"
+                    elif "speaker" in name_lower or "headphone" in name_lower or "динамик" in name_lower or "наушник" in name_lower:
+                        category = "speaker"
+                
+                self._add_peripheral(peripherals, seen_devices, category, name,
+                                   manufacturer, description, connection_type, device_id)
+        except Exception as e:
+            logging.error(f"Ошибка получения информации об аудио устройствах: {e}")
+
+        # Другие USB устройства (HID, USB устройства и т.д.)
+        try:
+            other_usb = pnp_devices_by_class.get("USB", []) + \
+                       pnp_devices_by_class.get("HIDClass", [])
+            for device in other_usb:
+                device_id = device.DeviceID
+                name = device.Name.strip() if device.Name else None
+                # Пропускаем уже обработанные категории и виртуальные устройства
+                if not name or self._is_virtual_device(name, device_id):
+                    continue
+                
+                # Пропускаем устройства, которые уже были обработаны как клавиатуры, мыши и т.д.
+                name_lower = name.lower()
+                if any(keyword in name_lower for keyword in ["keyboard", "клавиатур", "mouse", "мыш", 
+                                                              "monitor", "монитор", "printer", "принтер",
+                                                              "camera", "камер", "audio", "аудио"]):
+                    continue
+                
+                manufacturer = device.Manufacturer.strip() if device.Manufacturer else None
+                description = device.Description.strip() if device.Description else None
+                connection_type = self._detect_connection_type(device_id, "USB")
+                
+                self._add_peripheral(peripherals, seen_devices, "other", name,
+                                   manufacturer, description, connection_type, device_id)
+        except Exception as e:
+            logging.error(f"Ошибка получения информации о других USB устройствах: {e}")
 
         return peripherals
 

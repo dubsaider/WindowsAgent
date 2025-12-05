@@ -6,6 +6,7 @@
 """
 
 import logging
+import re
 import socket
 from typing import Optional, List
 
@@ -130,7 +131,10 @@ class WindowsHardwareCollector:
             for gpu in gpus:
                 if "Intel" in (gpu.Name or ""):
                     continue
-                memory_gb = int(gpu.AdapterRAM) // (1024 ** 3) if gpu.AdapterRAM else None
+                # Исправляем проблему с памятью (-1 означает неизвестно)
+                memory_gb = None
+                if gpu.AdapterRAM and int(gpu.AdapterRAM) > 0:
+                    memory_gb = int(gpu.AdapterRAM) // (1024 ** 3)
                 return GPU(
                     serial_number=None,
                     model=gpu.Name.strip() if gpu.Name else None,
@@ -245,27 +249,74 @@ class WindowsHardwareCollector:
         ]
         return any(pattern in name_lower for pattern in virtual_patterns)
 
+    def _is_system_device(self, name: str, pnp_class: str = None) -> bool:
+        """Проверка, является ли устройство системным (не периферией)"""
+        if not name:
+            return False
+        name_lower = name.lower()
+        pnp_class_lower = (pnp_class or "").lower()
+        
+        # Системные устройства, которые не являются периферией
+        system_patterns = [
+            "usb-концентратор", "usb hub", "usb host controller", "хост-контроллер",
+            "usb root hub", "корневой usb-концентратор", "универсальный usb-концентратор",
+            "hid-совместимый системный контроллер", "hid-совместимое устройство управления",
+            "hid-совместимое устройство, определенное поставщиком",
+            "составное usb устройство", "composite usb device",
+            "стандартный usb хост-контроллер", "standard usb host controller",
+            "xhci", "ehci", "ohci", "uhci",
+        ]
+        
+        system_classes = ["system", "systemdevice", "usbcontroller", "usbhub"]
+        
+        return (any(pattern in name_lower for pattern in system_patterns) or
+                any(cls in pnp_class_lower for cls in system_classes))
+
+    def _normalize_device_name(self, name: str) -> str:
+        """Нормализация названия устройства для сравнения"""
+        if not name:
+            return ""
+        # Убираем стандартные префиксы и суффиксы
+        normalized = name.lower()
+        # Убираем стандартные префиксы
+        prefixes = ["generic", "универсальный", "стандартный", "standard"]
+        for prefix in prefixes:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+        # Убираем стандартные суффиксы в скобках
+        normalized = re.sub(r'\s*\(\([^)]+\)\)', '', normalized)  # ((Стандартные мониторы))
+        normalized = re.sub(r'\s*\([^)]*стандарт[^)]*\)', '', normalized, flags=re.IGNORECASE)
+        return normalized.strip()
+
     def _add_peripheral(self, peripherals: List[PeripheralDevice], seen_devices: set,
                        category: str, name: Optional[str], manufacturer: Optional[str],
                        description: Optional[str], connection_type: Optional[str],
-                       device_id: str = None) -> bool:
+                       device_id: str = None, pnp_class: str = None) -> bool:
         """Добавить периферийное устройство, избегая дубликатов"""
         if not name:
             return False
         
-        # Создаем уникальный ключ для устройства
-        key = f"{category}_{name}_{manufacturer or ''}"
-        if device_id:
-            key = device_id
-        
-        if key in seen_devices:
-            return False
-        
-        # Пропускаем только явно виртуальные устройства
+        # Пропускаем виртуальные устройства
         if self._is_virtual_device(name, device_id):
             return False
         
-        seen_devices.add(key)
+        # Пропускаем системные устройства
+        if self._is_system_device(name, pnp_class):
+            return False
+        
+        # Используем device_id как основной ключ для определения дубликатов
+        # Если device_id есть - это уникальное устройство, даже если названия одинаковые
+        if device_id:
+            if device_id in seen_devices:
+                return False
+            seen_devices.add(device_id)
+        else:
+            # Если device_id нет, используем комбинацию категории, имени и производителя
+            key = f"{category}_{name}_{manufacturer or ''}"
+            if key in seen_devices:
+                return False
+            seen_devices.add(key)
+        
         peripherals.append(
             PeripheralDevice(
                 category=category,
@@ -306,7 +357,7 @@ class WindowsHardwareCollector:
                 connection_type = self._detect_connection_type(device_id, "Monitor")
                 
                 self._add_peripheral(peripherals, seen_devices, "monitor", name, 
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Monitor")
             
             # Затем дополняем из Win32_DesktopMonitor (может быть больше информации)
             try:
@@ -320,7 +371,7 @@ class WindowsHardwareCollector:
                     connection_type = None
                     
                     self._add_peripheral(peripherals, seen_devices, "monitor", name,
-                                       manufacturer, description, connection_type, device_id)
+                                       manufacturer, description, connection_type, device_id, "Monitor")
             except Exception:
                 pass  # Если не удалось получить, продолжаем
                 
@@ -339,7 +390,7 @@ class WindowsHardwareCollector:
                 connection_type = self._detect_connection_type(device_id, "Keyboard")
                 
                 self._add_peripheral(peripherals, seen_devices, "keyboard", name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Keyboard")
             
             # Затем из Win32_Keyboard
             try:
@@ -351,7 +402,7 @@ class WindowsHardwareCollector:
                     connection_type = None
                     
                     self._add_peripheral(peripherals, seen_devices, "keyboard", name,
-                                       None, description, connection_type, device_id)
+                                       None, description, connection_type, device_id, "Keyboard")
             except Exception:
                 pass
                 
@@ -370,7 +421,7 @@ class WindowsHardwareCollector:
                 connection_type = self._detect_connection_type(device_id, "Mouse")
                 
                 self._add_peripheral(peripherals, seen_devices, "mouse", name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Mouse")
             
             # Затем из Win32_PointingDevice
             try:
@@ -382,7 +433,7 @@ class WindowsHardwareCollector:
                     connection_type = None
                     
                     self._add_peripheral(peripherals, seen_devices, "mouse", name,
-                                       None, description, connection_type, device_id)
+                                       None, description, connection_type, device_id, "Mouse")
             except Exception:
                 pass
                 
@@ -422,29 +473,29 @@ class WindowsHardwareCollector:
                 device_id = f"printer_{name or len(peripherals)}"
                 
                 self._add_peripheral(peripherals, seen_devices, "printer", name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Printer")
         except Exception as e:
             logging.error(f"Ошибка получения информации о принтерах: {e}")
 
-        # Веб-камеры и камеры
+        # Веб-камеры и камеры (не путать со сканерами)
         try:
-            cameras = pnp_devices_by_class.get("Camera", []) + pnp_devices_by_class.get("Image", [])
+            cameras = pnp_devices_by_class.get("Camera", [])
             for cam in cameras:
                 device_id = cam.DeviceID
                 name = cam.Name.strip() if cam.Name else None
-                # Пропускаем виртуальные камеры
-                if name and ("virtual" in name.lower() or "виртуальн" in name.lower()):
+                # Пропускаем сканеры (они часто попадают в Image класс)
+                if name and ("scanner" in name.lower() or "сканер" in name.lower() or "wsd устройство сканирования" in name.lower()):
                     continue
                 manufacturer = cam.Manufacturer.strip() if cam.Manufacturer else None
                 description = cam.Description.strip() if cam.Description else None
                 connection_type = self._detect_connection_type(device_id, "Camera")
                 
                 self._add_peripheral(peripherals, seen_devices, "camera", name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Camera")
         except Exception as e:
             logging.error(f"Ошибка получения информации о камерах: {e}")
 
-        # Аудио устройства (микрофоны, динамики)
+        # Аудио устройства (микрофоны, динамики) - исключаем аудио выходы мониторов
         try:
             audio_devices = pnp_devices_by_class.get("AudioEndpoint", []) + \
                           pnp_devices_by_class.get("Media", []) + \
@@ -452,6 +503,10 @@ class WindowsHardwareCollector:
             for audio in audio_devices:
                 device_id = audio.DeviceID
                 name = audio.Name.strip() if audio.Name else None
+                # Пропускаем аудио выходы мониторов (они не являются отдельной периферией)
+                if name and ("high definition audio" in name.lower() and 
+                            any(mon_name in name.lower() for mon_name in ["nvidia", "amd", "intel"])):
+                    continue
                 manufacturer = audio.Manufacturer.strip() if audio.Manufacturer else None
                 description = audio.Description.strip() if audio.Description else None
                 connection_type = self._detect_connection_type(device_id, "Audio")
@@ -466,17 +521,23 @@ class WindowsHardwareCollector:
                         category = "speaker"
                 
                 self._add_peripheral(peripherals, seen_devices, category, name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, "Audio")
         except Exception as e:
             logging.error(f"Ошибка получения информации об аудио устройствах: {e}")
 
-        # Другие USB устройства (HID, USB устройства и т.д.)
+        # Другие USB устройства (HID, USB устройства и т.д.) - только реальная периферия
         try:
             other_usb = pnp_devices_by_class.get("USB", []) + \
                        pnp_devices_by_class.get("HIDClass", [])
             for device in other_usb:
                 device_id = device.DeviceID
                 name = device.Name.strip() if device.Name else None
+                pnp_class = getattr(device, "PNPClass", None)
+                
+                # Пропускаем системные устройства
+                if self._is_system_device(name, pnp_class):
+                    continue
+                
                 # Пропускаем уже обработанные категории и виртуальные устройства
                 if not name or self._is_virtual_device(name, device_id):
                     continue
@@ -485,7 +546,8 @@ class WindowsHardwareCollector:
                 name_lower = name.lower()
                 if any(keyword in name_lower for keyword in ["keyboard", "клавиатур", "mouse", "мыш", 
                                                               "monitor", "монитор", "printer", "принтер",
-                                                              "camera", "камер", "audio", "аудио"]):
+                                                              "camera", "камер", "audio", "аудио",
+                                                              "scanner", "сканер"]):
                     continue
                 
                 manufacturer = device.Manufacturer.strip() if device.Manufacturer else None
@@ -493,7 +555,7 @@ class WindowsHardwareCollector:
                 connection_type = self._detect_connection_type(device_id, "USB")
                 
                 self._add_peripheral(peripherals, seen_devices, "other", name,
-                                   manufacturer, description, connection_type, device_id)
+                                   manufacturer, description, connection_type, device_id, pnp_class)
         except Exception as e:
             logging.error(f"Ошибка получения информации о других USB устройствах: {e}")
 

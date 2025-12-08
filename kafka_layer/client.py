@@ -31,6 +31,9 @@ class KafkaClient:
             retries=5,
             acks="all",
             request_timeout_ms=30000,
+            metadata_max_age_ms=300000,  # Обновление метаданных каждые 5 минут
+            connections_max_idle_ms=540000,  # Закрытие неактивных соединений через 9 минут
+            api_version=(0, 10, 1),  # Явно указываем версию API для совместимости
         )
         self.logger.info("Kafka Producer создан (kafka_layer.client)")
 
@@ -50,17 +53,30 @@ class KafkaClient:
                 value=data,
                 key=config.pc_id.encode("utf-8"),
             )
-            meta = future.get(timeout=10)
+            meta = future.get(timeout=30)  # Увеличиваем таймаут до 30 секунд
             self.logger.info(
                 f"Конфигурация отправлена: PC={config.pc_id}, "
                 f"Topic={meta.topic}, Partition={meta.partition}, Offset={meta.offset}"
             )
         except KafkaError as e:
             self.logger.error(f"Ошибка отправки в Kafka: {e}")
+            # Закрываем producer при ошибке для пересоздания при следующей попытке
+            if self.producer:
+                try:
+                    self.producer.close()
+                except Exception:
+                    pass
             self.producer = None
             raise
         except Exception as e:
             self.logger.error(f"Неожиданная ошибка при отправке в Kafka: {e}")
+            # Закрываем producer при ошибке
+            if self.producer:
+                try:
+                    self.producer.close()
+                except Exception:
+                    pass
+            self.producer = None
             raise
 
     def close(self):

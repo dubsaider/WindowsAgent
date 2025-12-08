@@ -133,6 +133,30 @@ class PeripheralDevice:
 
 
 @dataclass
+class HIDDevice:
+    """Физическое HID‑устройство, агрегирующее все его интерфейсы"""
+
+    vid: Optional[str] = None
+    pid: Optional[str] = None
+    serial: Optional[str] = None
+    usb_path: Optional[str] = None  # Путь/порт USB, если есть
+    name: Optional[str] = None
+    manufacturer: Optional[str] = None
+    description: Optional[str] = None
+    interfaces: List[str] = None  # ["keyboard", "mouse", ...]
+    is_keyboard: bool = False
+    is_mouse: bool = False
+    composite: bool = False  # Есть несколько интерфейсов
+
+    def __post_init__(self):
+        if self.interfaces is None:
+            self.interfaces = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class PCConfiguration:
     """Полная конфигурация ПК"""
 
@@ -147,6 +171,7 @@ class PCConfiguration:
     network_adapters: List[NetworkAdapter] = None
     psu: Optional[PSU] = None
     peripherals: List[PeripheralDevice] = None
+    hid_devices: List[HIDDevice] = None  # Физические HID‑устройства
     system_info: Optional["SystemInfo"] = None  # Инфраструктурная информация
     timestamp: Optional[datetime] = None
 
@@ -159,6 +184,8 @@ class PCConfiguration:
             self.network_adapters = []
         if self.peripherals is None:
             self.peripherals = []
+        if self.hid_devices is None:
+            self.hid_devices = []
         if self.timestamp is None:
             self.timestamp = datetime.now()
 
@@ -187,6 +214,8 @@ class PCConfiguration:
             result["psu"] = self.psu.to_dict()
         if self.peripherals:
             result["peripherals"] = [p.to_dict() for p in self.peripherals]
+        if self.hid_devices:
+            result["hid_devices"] = [h.to_dict() for h in self.hid_devices]
         if self.system_info:
             result["system_info"] = self.system_info.to_dict()
 
@@ -226,6 +255,8 @@ class PCConfiguration:
             config.psu = PSU(**data["psu"])
         if data.get("peripherals"):
             config.peripherals = [PeripheralDevice(**p) for p in data["peripherals"]]
+        if data.get("hid_devices"):
+            config.hid_devices = [HIDDevice(**h) for h in data["hid_devices"]]
         if data.get("system_info"):
             config.system_info = SystemInfo(**data["system_info"])
 

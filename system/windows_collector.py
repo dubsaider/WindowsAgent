@@ -22,6 +22,7 @@ from domain.models import (
     NetworkAdapter,
     PSU,
     PeripheralDevice,
+    HIDDevice,
     SystemInfo,
 )
 
@@ -659,6 +660,114 @@ class WindowsHardwareCollector:
 
         return peripherals
 
+    def _parse_usb_id(self, device_id: str) -> tuple:
+        """Извлечь VID/PID/serial из PNPDeviceID"""
+        if not device_id:
+            return None, None, None
+        vid = pid = serial = None
+        try:
+            vid_match = re.search(r"VID_([0-9A-Fa-f]{4})", device_id)
+            pid_match = re.search(r"PID_([0-9A-Fa-f]{4})", device_id)
+            if vid_match:
+                vid = vid_match.group(1).upper()
+            if pid_match:
+                pid = pid_match.group(1).upper()
+            # serial обычно после последнего '\'
+            if "\\" in device_id:
+                serial_candidate = device_id.split("\\")[-1]
+                if serial_candidate and "{" not in serial_candidate:
+                    serial = serial_candidate
+        except Exception:
+            pass
+        return vid, pid, serial
+
+    def get_hid_devices(self) -> List[HIDDevice]:
+        """
+        Агрегировать HID по физическому устройству:
+        ключ = vid:pid + serial (если есть) + usb_path/bus-port
+        """
+        hid_devices: List[HIDDevice] = []
+        seen_keys = {}
+
+        # Собираем все PnP устройства, относящиеся к HID / клавиатурам / мышам
+        pnp_hid = []
+        try:
+            all_pnp = self.wmi_conn.Win32_PnPEntity()
+            for dev in all_pnp:
+                pnp_class = getattr(dev, "PNPClass", "") or ""
+                if pnp_class in ("HIDClass", "Keyboard", "Mouse"):
+                    pnp_hid.append(dev)
+        except Exception as e:
+            logging.error(f"Ошибка получения PnP HID: {e}")
+            return hid_devices
+
+        for dev in pnp_hid:
+            device_id = getattr(dev, "PNPDeviceID", None) or getattr(dev, "DeviceID", None)
+            name = dev.Name.strip() if getattr(dev, "Name", None) else None
+            manufacturer = dev.Manufacturer.strip() if getattr(dev, "Manufacturer", None) else None
+            description = dev.Description.strip() if getattr(dev, "Description", None) else None
+            pnp_class = getattr(dev, "PNPClass", "") or ""
+
+            # Определяем интерфейсы
+            interfaces = []
+            lower_name = (name or "").lower()
+            if pnp_class.lower() == "keyboard" or "keyboard" in lower_name or "клавиатур" in lower_name:
+                interfaces.append("keyboard")
+            if pnp_class.lower() == "mouse" or "mouse" in lower_name or "мыш" in lower_name:
+                interfaces.append("mouse")
+            if not interfaces and pnp_class.lower() == "hidclass":
+                # По описанию пытаемся понять
+                if "keyboard" in lower_name or "клавиатур" in lower_name:
+                    interfaces.append("keyboard")
+                if "mouse" in lower_name or "мыш" in lower_name:
+                    interfaces.append("mouse")
+
+            is_keyboard = "keyboard" in interfaces
+            is_mouse = "mouse" in interfaces
+
+            vid, pid, serial = self._parse_usb_id(device_id or "")
+            usb_path = getattr(dev, "LocationInformation", None)
+            if usb_path:
+                usb_path = usb_path.strip()
+
+            # Ключ агрегации: vid:pid:serial_or_path
+            key_serial = serial or usb_path or device_id or (name or "")
+            key = f"{vid or 'NA'}:{pid or 'NA'}:{key_serial}"
+
+            if key not in seen_keys:
+                seen_keys[key] = HIDDevice(
+                    vid=vid,
+                    pid=pid,
+                    serial=serial,
+                    usb_path=usb_path,
+                    name=name,
+                    manufacturer=manufacturer,
+                    description=description,
+                    interfaces=[],
+                    is_keyboard=is_keyboard,
+                    is_mouse=is_mouse,
+                    composite=False,
+                )
+            hid = seen_keys[key]
+
+            # Объединяем интерфейсы
+            for iface in interfaces:
+                if iface not in hid.interfaces:
+                    hid.interfaces.append(iface)
+            hid.is_keyboard = hid.is_keyboard or is_keyboard
+            hid.is_mouse = hid.is_mouse or is_mouse
+            hid.composite = len(hid.interfaces) > 1
+
+            # Если обнаружили другой порт, фиксируем usb_path как последний известный и помечаем composite для портов
+            if usb_path and hid.usb_path and usb_path != hid.usb_path:
+                # сохраняем последний путь, но можно позже расширить логирование
+                hid.usb_path = usb_path
+            elif usb_path and not hid.usb_path:
+                hid.usb_path = usb_path
+
+        hid_devices.extend(seen_keys.values())
+        return hid_devices
+
     def collect_configuration(self) -> PCConfiguration:
         """Собрать полную конфигурацию ПК (со стороны ОС/WMI)."""
         pc_id = self.get_pc_id()
@@ -675,6 +784,7 @@ class WindowsHardwareCollector:
             psu=self.get_psu(),
             peripherals=self.get_peripherals(),
             system_info=self.get_system_info(),
+            hid_devices=self.get_hid_devices(),
         )
 
 

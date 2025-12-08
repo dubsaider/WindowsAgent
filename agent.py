@@ -10,6 +10,9 @@
 import sys
 import time
 import logging
+import json
+import hashlib
+import os
 from typing import Optional
 
 from domain.models import PCConfiguration
@@ -20,7 +23,7 @@ from system import WindowsHardwareCollector
 class PCGuardianAgent:
     """Основной класс агента PC-Guardian для Windows"""
     
-    def __init__(self, config_file: Optional[str] = None, scan_interval: int = 180):
+    def __init__(self, config_file: Optional[str] = None, scan_interval: int = 180, heartbeat_interval: int = 1800):
         """
         Инициализация агента
         
@@ -36,13 +39,15 @@ class PCGuardianAgent:
         self.kafka_config = KafkaConfig(config_file)
         self.kafka_client = KafkaClient(self.kafka_config)
         self.running = False
+        self.state_file = "pc_guardian_state.json"
+        self.heartbeat_interval = heartbeat_interval  # секунд между «пульсами» даже без изменений
         
         # Настройка логирования
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('pc_guardian_agent.log'),
+                logging.FileHandler('pc_guardian_agent.log', encoding='utf-8'),
                 logging.StreamHandler()
             ]
         )
@@ -55,16 +60,54 @@ class PCGuardianAgent:
     
     def _send_configuration(self, config: PCConfiguration):
         """Отправить конфигурацию в Kafka"""
-        # Вся логика отправки инкапсулирована в KafkaClient
         self.kafka_client.send_configuration(config)
+
+    # ----- Отправка только при изменении конфигурации -----
+    def _calc_config_hash(self, config: PCConfiguration) -> str:
+        """Детерминированный хеш полной конфигурации"""
+        payload = config.to_dict()
+        payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+
+    def _load_state(self) -> dict:
+        if not os.path.exists(self.state_file):
+            return {}
+        try:
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            self.logger.warning(f"Не удалось прочитать состояние: {e}")
+            return {}
+
+    def _save_state(self, hash_value: str, last_sent_ts: float):
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump({"last_hash": hash_value, "last_sent_ts": last_sent_ts}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.warning(f"Не удалось сохранить состояние: {e}")
     
     def scan_and_send(self):
         """Сканировать конфигурацию и отправить в Kafka"""
         try:
             self.logger.info("Начало сканирования конфигурации...")
             config = self.collector.collect_configuration()
-            self.logger.info(f"Конфигурация собрана для PC: {config.pc_id}")
+            config_hash = self._calc_config_hash(config)
+            state = self._load_state()
+            last_hash = state.get("last_hash")
+            last_sent_ts = state.get("last_sent_ts")
+            now = time.time()
+
+            if last_hash == config_hash:
+                # Нет изменений — проверяем, не пора ли отправить heartbeat
+                if last_sent_ts and (now - last_sent_ts) < self.heartbeat_interval:
+                    self.logger.info("Изменений нет — отправка пропущена (таймер heartbeat еще не истек)")
+                    return
+                self.logger.info("Изменений нет — отправляем heartbeat-состояние")
+            else:
+                self.logger.info(f"Конфигурация собрана для PC: {config.pc_id} (обнаружены изменения)")
+
             self._send_configuration(config)
+            self._save_state(config_hash, now)
         except Exception as e:
             self.logger.error(f"Ошибка при сканировании: {e}")
     
@@ -104,11 +147,12 @@ def main():
     parser = argparse.ArgumentParser(description='PC-Guardian Agent для Windows')
     parser.add_argument('--config', type=str, help='Путь к файлу конфигурации Kafka')
     parser.add_argument('--interval', type=int, default=180, help='Интервал сканирования в секундах (по умолчанию 180 = 3 минуты)')
+    parser.add_argument('--heartbeat', type=int, default=1800, help='Интервал heartbeat в секундах (по умолчанию 1800 = 30 минут)')
     parser.add_argument('--once', action='store_true', help='Выполнить одно сканирование и выйти')
     
     args = parser.parse_args()
     
-    agent = PCGuardianAgent(config_file=args.config, scan_interval=args.interval)
+    agent = PCGuardianAgent(config_file=args.config, scan_interval=args.interval, heartbeat_interval=args.heartbeat)
     
     try:
         if args.once:

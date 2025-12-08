@@ -11,8 +11,9 @@ from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# Автоматический сбор всех подмодулей kafka
 kafka_hiddenimports = collect_submodules('kafka')
+system_hiddenimports = collect_submodules('system')
+agent_core_hiddenimports = collect_submodules('agent_core')
 
 a = Analysis(
     ['agent.py'],
@@ -21,6 +22,7 @@ a = Analysis(
     datas=[
         # Пример: положить пример конфига рядом с exe
         ('config.json.example', '.'),
+        ('system\\*.py', 'system'),
     ],
     hiddenimports=[
         # WMI и COM
@@ -28,7 +30,7 @@ a = Analysis(
         'win32com',
         'win32com.client',
         # kafka-python - все подмодули собираются автоматически
-    ] + kafka_hiddenimports + [
+    ] + kafka_hiddenimports + system_hiddenimports + agent_core_hiddenimports + [
         # Версия агента
         '__version__',
     ],

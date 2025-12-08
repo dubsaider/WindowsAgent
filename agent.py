@@ -10,28 +10,29 @@
 import sys
 import time
 import logging
-import json
-import hashlib
-import os
 from typing import Optional
 
 from domain.models import PCConfiguration
 from kafka_layer import KafkaConfig, KafkaClient
 from system import WindowsHardwareCollector
+from agent_core.state import AgentState, StateStore
+from agent_core.hasher import calc_config_hash
+from agent_core.logging_config import setup_logging
 
 
 class PCGuardianAgent:
     """Основной класс агента PC-Guardian для Windows"""
-    
+
     def __init__(self, config_file: Optional[str] = None, scan_interval: int = 180, heartbeat_interval: int = 1800):
         """
-        Инициализация агента
-        
         Args:
             config_file: Путь к файлу конфигурации Kafka
-            scan_interval: Интервал сканирования в секундах (по умолчанию 180 секунд = 3 минуты)
+            scan_interval: Интервал сканирования в секундах (по умолчанию 180)
+            heartbeat_interval: Интервал принудительной отправки без изменений (по умолчанию 1800)
         """
         self.scan_interval = scan_interval
+        self.heartbeat_interval = heartbeat_interval
+
         # Слой ОС / WMI
         self.collector = WindowsHardwareCollector()
 
@@ -39,75 +40,47 @@ class PCGuardianAgent:
         self.kafka_config = KafkaConfig(config_file)
         self.kafka_client = KafkaClient(self.kafka_config)
         self.running = False
+
+        # Состояние
         self.state_file = "pc_guardian_state.json"
-        self.heartbeat_interval = heartbeat_interval  # секунд между «пульсами» даже без изменений
-        
-        # Настройка логирования
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('pc_guardian_agent.log', encoding='utf-8'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-    
+        # Логирование
+        self.logger = setup_logging()
+        self.state_store = StateStore(self.state_file, self.logger)
+
     def _create_producer(self):
         """Совместимость со старым интерфейсом: делегируем в kafka_layer."""
-        # Оставлено для обратной совместимости. Новому коду лучше вызывать kafka_client напрямую.
         return
-    
+
     def _send_configuration(self, config: PCConfiguration):
-        """Отправить конфигурацию в Kafka"""
         self.kafka_client.send_configuration(config)
 
-    # ----- Отправка только при изменении конфигурации -----
-    def _calc_config_hash(self, config: PCConfiguration) -> str:
-        """Детерминированный хеш полной конфигурации"""
-        payload = config.to_dict()
-        payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+    def _should_send(self, config_hash: str, state: AgentState) -> bool:
+        now = time.time()
+        if state.last_hash != config_hash:
+            return True
+        if state.last_sent_ts and (now - state.last_sent_ts) < self.heartbeat_interval:
+            return False
+        return True
 
-    def _load_state(self) -> dict:
-        if not os.path.exists(self.state_file):
-            return {}
-        try:
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            self.logger.warning(f"Не удалось прочитать состояние: {e}")
-            return {}
-
-    def _save_state(self, hash_value: str, last_sent_ts: float):
-        try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump({"last_hash": hash_value, "last_sent_ts": last_sent_ts}, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.logger.warning(f"Не удалось сохранить состояние: {e}")
-    
     def scan_and_send(self):
-        """Сканировать конфигурацию и отправить в Kafka"""
+        """Сканировать конфигурацию и отправить при изменении или по таймеру heartbeat."""
         try:
             self.logger.info("Начало сканирования конфигурации...")
             config = self.collector.collect_configuration()
-            config_hash = self._calc_config_hash(config)
-            state = self._load_state()
-            last_hash = state.get("last_hash")
-            last_sent_ts = state.get("last_sent_ts")
-            now = time.time()
+            config_hash = calc_config_hash(config)
+            state = self.state_store.load()
 
-            if last_hash == config_hash:
-                # Нет изменений — проверяем, не пора ли отправить heartbeat
-                if last_sent_ts and (now - last_sent_ts) < self.heartbeat_interval:
-                    self.logger.info("Изменений нет — отправка пропущена (таймер heartbeat еще не истек)")
-                    return
+            if not self._should_send(config_hash, state):
+                self.logger.info("Изменений нет — отправка пропущена (heartbeat не истек)")
+                return
+
+            if state.last_hash == config_hash:
                 self.logger.info("Изменений нет — отправляем heartbeat-состояние")
             else:
                 self.logger.info(f"Конфигурация собрана для PC: {config.pc_id} (обнаружены изменения)")
 
             self._send_configuration(config)
-            self._save_state(config_hash, now)
+            self.state_store.save(AgentState(last_hash=config_hash, last_sent_ts=time.time()))
         except Exception as e:
             self.logger.error(f"Ошибка при сканировании: {e}")
     

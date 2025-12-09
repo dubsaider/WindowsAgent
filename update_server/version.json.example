@@ -1,5 +1,6 @@
 {
   "version": "1.4.9",
-  "download_url": "http://your-update-server:8000/updates/PCGuardianAgent.exe"
+  "download_url": "http://your-update-server:8000/updates/PCGuardianAgent.exe",
+  "checksum": "SHA256_ОТ_EXE"
 }
 

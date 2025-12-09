@@ -14,7 +14,8 @@ import shutil
 import subprocess
 import time
 import signal
-from typing import Optional, Tuple, List
+import hashlib
+from typing import Optional, Tuple, List, Dict
 from pathlib import Path
 
 from __version__ import __version__
@@ -34,12 +35,12 @@ class UpdateChecker:
         self.current_version = __version__
         self._agent_instance = None  # Ссылка на экземпляр агента для graceful shutdown
 
-    def check_for_updates(self) -> Optional[Tuple[str, str]]:
+    def check_for_updates(self) -> Optional[Tuple[str, str, Optional[str]]]:
         """
         Проверяет наличие новой версии на сервере.
         
         Returns:
-            Tuple (version, download_url) если есть обновление, иначе None
+            Tuple (version, download_url, checksum) если есть обновление, иначе None
         """
         if not self.update_server_url:
             self.logger.debug("URL сервера обновлений не указан, проверка обновлений пропущена")
@@ -54,6 +55,7 @@ class UpdateChecker:
                 data = json.loads(response.read().decode('utf-8'))
                 latest_version = data.get('version')
                 download_url = data.get('download_url')
+                checksum = data.get('checksum')
                 
                 if not latest_version or not download_url:
                     self.logger.warning("Сервер обновлений вернул некорректные данные")
@@ -61,7 +63,7 @@ class UpdateChecker:
                 
                 if self._compare_versions(self.current_version, latest_version) < 0:
                     self.logger.info(f"Найдена новая версия: {latest_version} (текущая: {self.current_version})")
-                    return (latest_version, download_url)
+                    return (latest_version, download_url, checksum)
                 else:
                     self.logger.debug(f"Агент актуален (версия {self.current_version})")
                     return None
@@ -76,13 +78,37 @@ class UpdateChecker:
             self.logger.error(f"Неожиданная ошибка при проверке обновлений: {e}")
             return None
 
-    def download_update(self, download_url: str, target_path: Optional[str] = None) -> Optional[str]:
+    def _calc_sha256(self, file_path: Path) -> str:
+        """Вычисляет SHA256 для файла."""
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _verify_checksum(self, file_path: Path, expected_checksum: Optional[str]) -> bool:
+        """Проверяет контрольную сумму если она задана."""
+        if not expected_checksum:
+            return True
+        try:
+            actual = self._calc_sha256(file_path)
+            if actual.lower() != expected_checksum.lower():
+                self.logger.error(f"Контрольная сумма не совпала: ожидалось {expected_checksum}, получено {actual}")
+                return False
+            self.logger.info("Контрольная сумма обновления подтверждена")
+            return True
+        except Exception as e:
+            self.logger.error(f"Ошибка при проверке контрольной суммы: {e}")
+            return False
+
+    def download_update(self, download_url: str, target_path: Optional[str] = None, expected_checksum: Optional[str] = None) -> Optional[str]:
         """
         Скачивает обновление с сервера.
         
         Args:
             download_url: URL для скачивания exe файла
             target_path: Путь для сохранения файла (если None, используется временная директория)
+            expected_checksum: Ожидаемая SHA256 для проверки целостности
             
         Returns:
             Путь к скачанному файлу или None в случае ошибки
@@ -98,6 +124,17 @@ class UpdateChecker:
             # Скачиваем файл
             urllib.request.urlretrieve(download_url, target_path)
             self.logger.info(f"Обновление скачано: {target_path}")
+
+            # Проверяем контрольную сумму, если указана
+            if expected_checksum:
+                if not self._verify_checksum(Path(target_path), expected_checksum):
+                    self.logger.error("Проверка контрольной суммы не пройдена, обновление отклонено")
+                    try:
+                        Path(target_path).unlink()
+                    except Exception:
+                        pass
+                    return None
+
             return target_path
             
         except Exception as e:
@@ -163,11 +200,11 @@ class UpdateChecker:
         if not update_info:
             return False
         
-        version, download_url = update_info
+        version, download_url, checksum = update_info
         self.logger.info(f"Начинается установка обновления до версии {version}")
         
         # Скачиваем обновление
-        update_file = self.download_update(download_url)
+        update_file = self.download_update(download_url, expected_checksum=checksum)
         if not update_file:
             return False
         
@@ -258,13 +295,14 @@ class UpdateChecker:
             self.logger.error(f"Ошибка при graceful shutdown: {e}")
             sys.exit(1)
     
-    def perform_seamless_update(self, download_url: str, version: str) -> bool:
+    def perform_seamless_update(self, download_url: str, version: str, checksum: Optional[str] = None) -> bool:
         """
         Выполняет незаметное обновление: скачивает новую версию, запускает её и завершает старую.
         
         Args:
             download_url: URL для скачивания нового exe
             version: Версия обновления
+            checksum: Ожидаемая SHA256 (опционально)
             
         Returns:
             True если обновление успешно, False в противном случае
@@ -282,6 +320,15 @@ class UpdateChecker:
             
             self.logger.info(f"Скачивание обновления в {temp_exe_path}")
             urllib.request.urlretrieve(download_url, str(temp_exe_path))
+
+            # Проверяем контрольную сумму, если она указана
+            if checksum:
+                if not self._verify_checksum(temp_exe_path, checksum):
+                    try:
+                        temp_exe_path.unlink()
+                    except Exception:
+                        pass
+                    return False
             
             # Проверяем, что файл скачался
             if not temp_exe_path.exists() or temp_exe_path.stat().st_size == 0:
@@ -333,6 +380,7 @@ class UpdateChecker:
             notification: Словарь с информацией об обновлении:
                 - version: версия обновления
                 - download_url: URL для скачивания exe файла
+                - checksum: sha256 (опционально)
                 
         Returns:
             True если обновление было установлено, False в противном случае
@@ -340,6 +388,7 @@ class UpdateChecker:
         try:
             version = notification.get('version')
             download_url = notification.get('download_url')
+            checksum = notification.get('checksum')
             
             if not version or not download_url:
                 self.logger.warning("Уведомление об обновлении содержит некорректные данные")
@@ -353,7 +402,7 @@ class UpdateChecker:
             self.logger.info(f"Получено уведомление об обновлении до версии {version} (текущая: {self.current_version})")
             
             # Выполняем незаметное обновление
-            return self.perform_seamless_update(download_url, version)
+            return self.perform_seamless_update(download_url, version, checksum)
                 
         except Exception as e:
             self.logger.error(f"Ошибка при обработке уведомления об обновлении: {e}")

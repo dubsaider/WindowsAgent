@@ -12,6 +12,10 @@ echo ========================================
 echo PC-Guardian Agent - Building EXE
 echo ========================================
 echo.
+echo Available options:
+echo   set IMAGE_NAME=PCGuardianAgent    ^<-- имя образа (по умолчанию)
+echo   set VERSION_SUFFIX=               ^<-- дополнительный суффикс (опционально)
+echo.
 
 REM Check if venv exists
 if exist "%VENV_DIR%\Scripts\activate.bat" (

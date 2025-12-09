@@ -7,7 +7,17 @@ PyInstaller spec-файл для сборки агента PC-Guardian в оди
     pyinstaller build_agent.spec
 """
 
+import os
+import sys
 from PyInstaller.utils.hooks import collect_submodules
+
+# Убедимся, что корень проекта в sys.path, чтобы импортировать __version__
+sys.path.insert(0, os.path.abspath("."))
+from __version__ import __version__
+
+# Имя образа можно задать через переменную окружения IMAGE_NAME (по умолчанию PCGuardianAgent)
+IMAGE_NAME = os.getenv("IMAGE_NAME", "PCGuardianAgent")
+APP_NAME = f"{IMAGE_NAME}_{__version__}"
 
 block_cipher = None
 
@@ -52,7 +62,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='PCGuardianAgent',
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

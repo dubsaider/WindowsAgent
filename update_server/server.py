@@ -17,6 +17,7 @@ import http.server
 import socketserver
 from pathlib import Path
 from urllib.parse import urlparse
+import hashlib
 
 
 class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
@@ -35,12 +36,21 @@ class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
         # Эндпоинт для получения информации о версии
         if path == '/updates/version.json' or path == '/version.json':
             self.serve_version_info()
-        # Эндпоинт для скачивания exe
-        elif path == '/updates/PCGuardianAgent.exe' or path == '/PCGuardianAgent.exe':
-            self.serve_exe_file()
+        # Эндпоинт для скачивания exe (любое имя)
+        elif path.endswith('.exe'):
+            filename = Path(path).name
+            self.serve_exe_file(filename)
         else:
             self.send_error(404, "Not Found")
     
+    def _calc_sha256(self, file_path: Path) -> str:
+        """Вычисляет SHA256 для файла."""
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
     def serve_version_info(self):
         """Отдаёт информацию о последней версии"""
         try:
@@ -51,6 +61,18 @@ class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
                 # Генерируем версию на основе файла __version__.py из корня проекта
                 version_data = self._generate_version_info()
             
+            # Если не указана контрольная сумма, пытаемся вычислить для exe
+            if 'checksum' not in version_data or not version_data.get('checksum'):
+                exe_path = None
+                if self.exe_dir:
+                    exe_files = list(self.exe_dir.glob("*.exe"))
+                    exe_path = exe_files[0] if exe_files else None
+                if exe_path and exe_path.exists():
+                    try:
+                        version_data['checksum'] = self._calc_sha256(exe_path)
+                    except Exception:
+                        pass
+
             response = json.dumps(version_data, ensure_ascii=False, indent=2)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -61,23 +83,32 @@ class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, f"Error loading version info: {e}")
     
-    def serve_exe_file(self):
+    def serve_exe_file(self, filename: str = None):
         """Отдаёт exe файл для скачивания"""
         try:
             if not self.exe_dir:
                 self.send_error(500, "EXE directory not configured")
                 return
             
-            exe_path = self.exe_dir / 'PCGuardianAgent.exe'
-            if not exe_path.exists():
-                self.send_error(404, "PCGuardianAgent.exe not found")
+            exe_path = None
+            if filename:
+                candidate = self.exe_dir / filename
+                if candidate.exists():
+                    exe_path = candidate
+            if exe_path is None:
+                exe_files = list(self.exe_dir.glob("*.exe"))
+                exe_path = exe_files[0] if exe_files else None
+
+            if not exe_path or not exe_path.exists():
+                self.send_error(404, f"{filename or 'PCGuardianAgent.exe'} not found")
                 return
             
             file_size = exe_path.stat().st_size
             
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
-            self.send_header('Content-Disposition', 'attachment; filename="PCGuardianAgent.exe"')
+            download_name = filename or exe_path.name
+            self.send_header('Content-Disposition', f'attachment; filename="{download_name}"')
             self.send_header('Content-Length', str(file_size))
             self.end_headers()
             
@@ -97,11 +128,25 @@ class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
             
             # Определяем URL для скачивания (на основе текущего запроса)
             host = self.headers.get('Host', 'localhost:8000')
-            download_url = f"http://{host}/updates/PCGuardianAgent.exe"
+            # По умолчанию берем первый exe в директории
+            exe_files = list(self.exe_dir.glob("*.exe")) if self.exe_dir else []
+            default_name = exe_files[0].name if exe_files else "PCGuardianAgent.exe"
+            download_url = f"http://{host}/updates/{default_name}"
             
+            checksum = None
+            exe_path = None
+            if self.exe_dir:
+                exe_path = exe_files[0] if exe_files else None
+            if exe_path and exe_path.exists():
+                try:
+                    checksum = self._calc_sha256(exe_path)
+                except Exception:
+                    checksum = None
+
             return {
                 "version": __version__,
-                "download_url": download_url
+                "download_url": download_url,
+                "checksum": checksum
             }
         except Exception:
             # Если не удалось получить версию, возвращаем заглушку
@@ -109,7 +154,8 @@ class UpdateServerHandler(http.server.SimpleHTTPRequestHandler):
             download_url = f"http://{host}/updates/PCGuardianAgent.exe"
             return {
                 "version": "1.0.0",
-                "download_url": download_url
+                "download_url": download_url,
+                "checksum": None
             }
     
     def log_message(self, format, *args):
@@ -141,9 +187,9 @@ def main():
         print(f"ОШИБКА: Директория {exe_dir} не существует")
         sys.exit(1)
     
-    exe_path = exe_dir / 'PCGuardianAgent.exe'
-    if not exe_path.exists():
-        print(f"ПРЕДУПРЕЖДЕНИЕ: Файл {exe_path} не найден")
+    exe_files = list(exe_dir.glob("*.exe"))
+    if not exe_files:
+        print(f"ПРЕДУПРЕЖДЕНИЕ: В {exe_dir} не найдено ни одного exe файла")
     
     version_file = Path(args.version_file).resolve() if args.version_file else None
     if version_file and not version_file.exists():

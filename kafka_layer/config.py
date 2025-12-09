@@ -46,6 +46,8 @@ class KafkaConfig:
         if config_file and os.path.exists(config_file):
             self._load_from_file(config_file)
 
+        self._validate()
+
     def _load_from_file(self, config_file: str):
         """Загрузка конфигурации из файла"""
         import json
@@ -86,6 +88,25 @@ class KafkaConfig:
                 )
         except Exception as e:
             print(f"Ошибка загрузки конфигурации Kafka: {e}")
+
+    def _validate(self):
+        """Базовая валидация конфигурации."""
+        errors = []
+
+        if not self.bootstrap_servers:
+            errors.append("bootstrap_servers не задан")
+
+        if not self.topic:
+            errors.append("topic не задан")
+
+        if not self.update_topic:
+            errors.append("update_topic не задан")
+
+        if self.update_check_interval and self.update_check_interval <= 0:
+            errors.append("update_check_interval должен быть > 0")
+
+        if errors:
+            raise ValueError(f"Некорректная конфигурация Kafka: {', '.join(errors)}")
 
     def get_producer_config(self) -> dict:
         """Получить конфигурацию для Kafka Producer"""

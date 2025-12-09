@@ -24,7 +24,8 @@ def send_update_notification(
     config_file: Optional[str],
     update_topic: str,
     version: str,
-    download_url: str
+    download_url: str,
+    checksum: Optional[str] = None
 ):
     """Отправляет уведомление об обновлении в Kafka"""
     
@@ -46,6 +47,8 @@ def send_update_notification(
         "download_url": download_url,
         "type": "agent_update"
     }
+    if checksum:
+        update_message["checksum"] = checksum
     
     try:
         # Отправляем сообщение в топик обновлений
@@ -99,6 +102,12 @@ def main():
         required=True,
         help='URL для скачивания exe файла (например, http://server:8000/updates/PCGuardianAgent.exe)'
     )
+    parser.add_argument(
+        '--checksum',
+        type=str,
+        required=False,
+        help='SHA256 для файла обновления (опционально)'
+    )
     
     args = parser.parse_args()
     
@@ -117,7 +126,8 @@ def main():
         config_file=args.config,
         update_topic=update_topic,
         version=args.version,
-        download_url=args.download_url
+        download_url=args.download_url,
+        checksum=args.checksum
     )
 
 

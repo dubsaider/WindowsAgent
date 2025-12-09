@@ -201,15 +201,16 @@ set UPDATE_TOPIC=pc-guardian-updates
    ```
 
 3. **Разместите exe файл на HTTP сервере:**
-   - Скопируйте `dist/PCGuardianAgent.exe` на сервер
+   - Скопируйте `dist/<IMAGE_NAME>_<VERSION>.exe` на сервер (по умолчанию `PCGuardianAgent_1.5.0.exe`)
    - Убедитесь, что файл доступен по HTTP URL
 
-4. **Отправьте уведомление в Kafka:**
+4. **Отправьте уведомление в Kafka (желательно с checksum):**
    ```bash
    python -m update_server.send_notification \
      --config config.json \
      --version 1.5.0 \
-     --download-url http://your-server:8000/updates/PCGuardianAgent.exe
+     --download-url http://your-server:8000/updates/PCGuardianAgent.exe \
+     --checksum <sha256_exe>
    ```
 
    Или без конфига:
@@ -217,7 +218,8 @@ set UPDATE_TOPIC=pc-guardian-updates
    python -m update_server.send_notification \
      --update-topic pc-guardian-updates \
      --version 1.5.0 \
-     --download-url http://your-server:8000/updates/PCGuardianAgent.exe
+     --download-url http://your-server:8000/updates/PCGuardianAgent.exe \
+     --checksum <sha256_exe>
    ```
 
 5. **Агенты автоматически:**

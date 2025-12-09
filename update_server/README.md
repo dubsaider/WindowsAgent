@@ -41,7 +41,8 @@ kafka-topics.sh --create \
 python -m update_server.send_notification \
   --config ../config.json \
   --version 1.5.0 \
-  --download-url http://your-server:8000/updates/PCGuardianAgent.exe
+  --download-url http://your-server:8000/updates/PCGuardianAgent.exe \
+  --checksum <sha256_exe>
 ```
 
 ### 4. Настройка агентов
@@ -60,7 +61,7 @@ python -m update_server.send_notification \
 
 1. Соберите новую версию: `build_agent.bat`
 2. Обновите версию в `__version__.py`
-3. Скопируйте новый `dist/PCGuardianAgent.exe` в директорию сервера
+3. Скопируйте новый `dist/<IMAGE_NAME>_<VERSION>.exe` (по умолчанию `PCGuardianAgent_1.5.0.exe`) в директорию сервера
 4. Отправьте уведомление в Kafka через `send_notification.py`
 5. Агенты автоматически обнаружат, скачают и установят обновление
 

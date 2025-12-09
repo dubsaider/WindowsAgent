@@ -126,7 +126,9 @@ class UpdateNotificationConsumer:
             except Exception:
                 pass
             self.consumer = None
-        if self.thread and self.thread.is_alive():
+        # Из callback может вызываться stop из того же потока.
+        # Чтобы не получить "cannot join current thread", проверяем.
+        if self.thread and self.thread.is_alive() and threading.current_thread() is not self.thread:
             self.thread.join(timeout=5)
         self.logger.info("Consumer обновлений остановлен")
 

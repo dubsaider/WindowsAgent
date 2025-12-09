@@ -286,6 +286,7 @@ class UpdateChecker:
         try:
             if self._agent_instance:
                 self.logger.info("Выполняется graceful shutdown агента...")
+                # Если мы в потоке consumer'а, не пытаемся ждать его join.
                 self._agent_instance.stop()
             else:
                 self.logger.warning("Экземпляр агента не установлен, выполняется принудительное завершение")

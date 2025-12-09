@@ -35,6 +35,13 @@ class KafkaConfig:
         self.consumer_group = os.getenv(
             "KAFKA_CONSUMER_GROUP", "pc-guardian-server"
         )
+        
+        # URL сервера обновлений (опционально, для HTTP-based обновлений)
+        self.update_server_url = os.getenv("UPDATE_SERVER_URL", None)
+        self.update_check_interval = int(os.getenv("UPDATE_CHECK_INTERVAL", "3600"))  # По умолчанию 1 час
+        
+        # Топик Kafka для уведомлений об обновлениях (опционально)
+        self.update_topic = os.getenv("UPDATE_TOPIC", "pc-guardian-updates")
 
         if config_file and os.path.exists(config_file):
             self._load_from_file(config_file)
@@ -67,6 +74,15 @@ class KafkaConfig:
                 )
                 self.consumer_group = config.get(
                     "consumer_group", self.consumer_group
+                )
+                self.update_server_url = config.get(
+                    "update_server_url", self.update_server_url
+                )
+                self.update_check_interval = config.get(
+                    "update_check_interval", self.update_check_interval
+                )
+                self.update_topic = config.get(
+                    "update_topic", self.update_topic
                 )
         except Exception as e:
             print(f"Ошибка загрузки конфигурации Kafka: {e}")

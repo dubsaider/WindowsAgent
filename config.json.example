@@ -7,6 +7,9 @@
   "ssl_keyfile": null,
   "sasl_mechanism": null,
   "sasl_username": null,
-  "sasl_password": null
+  "sasl_password": null,
+  "update_topic": "pc-guardian-updates",
+  "update_server_url": "http://your-update-server:8000/updates",
+  "update_check_interval": 3600
 }
 
